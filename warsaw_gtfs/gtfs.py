@@ -76,6 +76,16 @@ GTFS_HEADERS = {
         "drop_off_type",
         "shape_dist_traveled",
     ),
+    "transfers.txt": (
+        "from_stop_id",
+        "to_stop_id",
+        "from_route_id",
+        "to_route_id",
+        "from_trip_id",
+        "to_trip_id",
+        "transfer_type",
+        "min_transfer_time",
+    ),
     "frequencies.txt": (
         "trip_id",
         "start_time",

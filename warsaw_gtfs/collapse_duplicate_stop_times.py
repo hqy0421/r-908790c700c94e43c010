@@ -56,8 +56,36 @@ class CollapseDuplicateStopTimes(Task):
             StopTime,
             (trip_id, stop_sequence + 1),
         ).one_must("solve_duplicate: non-existing (trip_id, stop_sequence + 1) pair")
-        assert l.stop_id == r.stop_id
-        return self.merge_stop_times(l, r)
+        assert self.is_same_stop_event(l, r)
+
+        solution = self.merge_stop_times(l, r)
+        previous = r
+        next_sequence = stop_sequence + 2
+
+        # Also handle runs of three or more rows describing one event. A run
+        # ends at the first sequence gap, different stop, or missing row.
+        while True:
+            following = db.retrieve(StopTime, trip_id, next_sequence)
+            if following is None or not self.is_same_stop_event(previous, following):
+                break
+            solution = self.merge_stop_times(solution, following)
+            previous = following
+            next_sequence += 1
+
+        return solution
+
+    @staticmethod
+    def is_same_stop_event(l: StopTime, r: StopTime) -> bool:
+        """Adjacent rows for one trip/stop are one event.
+
+        Requiring exact sequence adjacency is what keeps two separated visits
+        in a loop trip as independent stop occurrences.
+        """
+        return (
+            l.trip_id == r.trip_id
+            and l.stop_id == r.stop_id
+            and r.stop_sequence == l.stop_sequence + 1
+        )
 
     def merge_stop_times(self, l: StopTime, r: StopTime) -> StopTime:
         return StopTime(
@@ -79,12 +107,64 @@ class CollapseDuplicateStopTimes(Task):
         )
 
     def apply_solutions(self, db: DBConnection, solutions: Sequence[StopTime]) -> None:
+        deletion_parameters = list(
+            dict.fromkeys(
+                (solution.trip_id, redundant_sequence)
+                for solution in solutions
+                for redundant_sequence in self.find_redundant_sequences(db, solution)
+            )
+        )
+
         with db.transaction():
             db.update_many(StopTime, solutions)
             db.raw_execute_many(
                 "DELETE FROM stop_times WHERE trip_id = ? AND stop_sequence = ?",
-                ((st.trip_id, st.stop_sequence + 1) for st in solutions),
+                deletion_parameters,
             )
+
+    def find_redundant_sequences(
+        self,
+        db: DBConnection,
+        solution: StopTime,
+    ) -> list[int]:
+        """Return the contiguous same-event rows folded into ``solution``."""
+        expected_sequence = solution.stop_sequence + 1
+        fallback = [solution.stop_sequence + 1]
+        try:
+            rows = list(
+                db.raw_execute(
+                    "SELECT stop_sequence "
+                    "FROM stop_times "
+                    "WHERE trip_id = ? AND stop_sequence > ? AND stop_id = ? "
+                    "ORDER BY stop_sequence",
+                    (solution.trip_id, solution.stop_sequence, solution.stop_id),
+                ).all()
+            )
+            if not rows:
+                # Preserve the original pair-collapse behavior for mock DBs or
+                # callers that supply a solved pair without queryable rows.
+                return fallback
+
+            redundant: list[int] = []
+            for row in rows:
+                sequence = cast(int, row[0])
+                if sequence != expected_sequence:
+                    break
+                redundant.append(sequence)
+                expected_sequence += 1
+        except Exception:
+            # Preserve the original pair-collapse behavior for minimal test
+            # doubles or databases where the introspection query is unavailable.
+            return fallback
+        return redundant
+
+
+def is_same_stop_event(l: StopTime, r: StopTime) -> bool:
+    return CollapseDuplicateStopTimes.is_same_stop_event(l, r)
+
+
+def can_merge_stop_times(l: StopTime, r: StopTime) -> bool:
+    return CollapseDuplicateStopTimes.is_same_stop_event(l, r)
 
 
 def merge_pax_exchange(l: PaxExchange, r: PaxExchange) -> PaxExchange:

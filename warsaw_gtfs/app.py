@@ -209,6 +209,10 @@ def create_intermediate_pipeline(
     output: OutputPaths | None = None,
     generate_shapes: bool = False,
 ) -> list[Task]:
+    load_json_task = LoadJSON(feed.resource_name)
+    merge_duplicate_stops_task = MergeDuplicateStops(
+        stop_id_lookup=load_json_task.stop_id_lookup
+    )
     tasks: list[Task] = [
         # ========================
         # 1. Create static objects
@@ -257,7 +261,7 @@ def create_intermediate_pipeline(
         # ========================
         # 2. Load data & drop anything non-WTP
         # ========================
-        LoadJSON(feed.resource_name),
+        load_json_task,
         ExecuteSQL(
             "DropNonSkmRailRoutes",
             "DELETE FROM routes WHERE type = 2 AND short_name NOT LIKE 'S%'",
@@ -395,7 +399,7 @@ def create_intermediate_pipeline(
         # ========================
         # 8. Merge & curate stops
         # ========================
-        MergeDuplicateStops(),
+        merge_duplicate_stops_task,
         MergeVirtualStops(
             [
                 ("605988", "605928"),  # Metro Młociny 88 → Metro Młociny 28
